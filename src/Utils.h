@@ -55,6 +55,54 @@ public:
   static int MACThenDecrypt(const uint8_t* shared_secret, uint8_t* dest, const uint8_t* src, int src_len);
 
   /**
+   * @brief  Compresses data using unishox2 if beneficial, otherwise returns original data.
+   * @param dest        Output buffer for compressed data
+   * @param src         Input data to compress
+   * @param src_len     Length of input data
+   * @param out_ver     (OUT) Set to PAYLOAD_VER_2 if compressed, PAYLOAD_VER_1 if not
+   * @returns  Length of data in dest (may be src copied if compression not beneficial)
+   */
+  static int compressIfBeneficial(uint8_t* dest, const uint8_t* src, int src_len, uint8_t* out_ver);
+
+  /**
+   * @brief  Decompresses data if it was compressed (based on version flag).
+   * @param dest        Output buffer for decompressed data
+   * @param src         Input data (compressed or not)
+   * @param src_len     Length of input data
+   * @param payload_ver Version flag (PAYLOAD_VER_1 = no compression, PAYLOAD_VER_2 = compressed)
+   * @returns  Length of data in dest (decompressed if needed, or copied if not compressed)
+   */
+  static int decompressIfNeeded(uint8_t* dest, const uint8_t* src, int src_len, uint8_t payload_ver);
+
+  /**
+   * @brief  Attempts to compress a payload with a fixed-size binary header, considering AES encryption padding.
+   *         Only compresses if it will save RF bytes after AES encryption (which pads to 16-byte blocks).
+   * @param dest           Output buffer for result (either compressed or original data)
+   * @param src            Input data (header + text)
+   * @param src_len        Length of input data
+   * @param header_size    Size of binary header to skip (will not be compressed)
+   * @param out_ver        (OUT) Set to PAYLOAD_VER_2 if compressed, PAYLOAD_VER_1 if not
+   * @param debug_label    Label for debug output (e.g., "GRP" or "TXT_MSG")
+   * @returns  Length of data in dest
+   */
+  static int compressPayloadWithHeader(uint8_t* dest, const uint8_t* src, int src_len, 
+                                       int header_size, uint8_t* out_ver, const char* debug_label);
+
+  /**
+   * @brief  Decompresses a payload with a fixed-size binary header if needed.
+   *         Handles the case where AES padding (0x00 bytes) may be present after compressed data.
+   * @param dest           Output buffer for decompressed data
+   * @param src            Input data (header + compressed/uncompressed text)
+   * @param src_len        Length of input data
+   * @param header_size    Size of binary header to skip (not compressed)
+   * @param payload_ver    Version flag (PAYLOAD_VER_1 = no compression, PAYLOAD_VER_2 = compressed)
+   * @param debug_label    Label for debug output (e.g., "GRP" or "TXT_MSG")
+   * @returns  Length of data in dest, or -1 on error
+   */
+  static int decompressPayloadWithHeader(uint8_t* dest, const uint8_t* src, int src_len,
+                                         int header_size, uint8_t payload_ver, const char* debug_label);
+
+  /**
    * \brief  converts 'src' bytes with given length to Hex representation, and null terminates.
   */
   static void toHex(char* dest, const uint8_t* src, size_t len);

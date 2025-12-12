@@ -39,7 +39,7 @@ int Mesh::searchChannelsByHash(const uint8_t* hash, GroupChannel channels[], int
 }
 
 DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
-  if (pkt->getPayloadVer() > PAYLOAD_VER_1) {  // not supported in this firmware version
+  if (pkt->getPayloadVer() > PAYLOAD_VER_2) {  // not supported in this firmware version
     MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): unsupported packet version", getLogDateTime());
     return ACTION_RELEASE;
   }
@@ -142,16 +142,36 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
             getPeerSharedSecret(secret, j);
 
             // decrypt, checking MAC is valid
-            uint8_t data[MAX_PACKET_PAYLOAD];
-            int len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
-            if (len > 0) {  // success!
+            uint8_t decrypted_data[MAX_PACKET_PAYLOAD];
+            int decrypted_len = Utils::MACThenDecrypt(secret, decrypted_data, macAndData, pkt->payload_len - i);
+            
+            if (decrypted_len > 0) {  // success!
+              // Decompress if needed (handles TXT_MSG, REQ, RESPONSE when compressed)
+              uint8_t final_data[MAX_PACKET_PAYLOAD];
+              int final_len = decrypted_len;
+              
+              // TXT_MSG has a 5-byte header (timestamp + type) followed by text
+              if (pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG && pkt->getPayloadVer() == PAYLOAD_VER_2) {
+                final_len = Utils::decompressPayloadWithHeader(
+                  final_data, decrypted_data, decrypted_len, 5, PAYLOAD_VER_2, "TXT_MSG"
+                );
+                if (final_len < 0) {
+                  MESH_DEBUG_PRINTLN("%s TXT_MSG decompression failed", getLogDateTime());
+                  continue;  // Try next peer
+                }
+              } else {
+                // Not compressed, not TXT_MSG, or no text: decompress entire payload if needed
+                final_len = Utils::decompressIfNeeded(final_data, decrypted_data, decrypted_len, pkt->getPayloadVer());
+              }
+              
               if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH) {
                 int k = 0;
-                uint8_t path_len = data[k++];
-                uint8_t* path = &data[k]; k += path_len;
-                uint8_t extra_type = data[k++] & 0x0F;   // upper 4 bits reserved for future use
-                uint8_t* extra = &data[k];
-                uint8_t extra_len = len - k;   // remainder of packet (may be padded with zeroes!)
+                uint8_t path_len = final_data[k++];
+                uint8_t* path = &final_data[k]; k += path_len;
+                uint8_t extra_type = final_data[k++] & 0x0F;   // upper 4 bits reserved for future use
+                uint8_t* extra = &final_data[k];
+                uint8_t extra_len = final_len - k;   // remainder of packet (may be padded with zeroes!)
+                
                 if (onPeerPathRecv(pkt, j, secret, path, path_len, extra_type, extra, extra_len)) {
                   if (pkt->isRouteFlood()) {
                     // send a reciprocal return path to sender, but send DIRECTLY!
@@ -160,8 +180,9 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
                   }
                 }
               } else {
-                onPeerDataRecv(pkt, pkt->getPayloadType(), j, secret, data, len);
+                onPeerDataRecv(pkt, pkt->getPayloadType(), j, secret, final_data, final_len);
               }
+
               found = true;
               break;
             }
@@ -218,10 +239,29 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         // for each matching channel, try to decrypt data
         for (int j = 0; j < num; j++) {
           // decrypt, checking MAC is valid
-          uint8_t data[MAX_PACKET_PAYLOAD];
-          int len = Utils::MACThenDecrypt(channels[j].secret, data, macAndData, pkt->payload_len - i);
-          if (len > 0) {  // success!
-            onGroupDataRecv(pkt, pkt->getPayloadType(), channels[j], data, len);
+          uint8_t decrypted_data[MAX_PACKET_PAYLOAD];
+          int decrypted_len = Utils::MACThenDecrypt(channels[j].secret, decrypted_data, macAndData, pkt->payload_len - i);
+          
+          if (decrypted_len > 0) {  // success!
+            // Decompress if needed (handles both GRP_TXT and GRP_DATA)
+            // Group messages have a 5-byte header (timestamp + type) followed by text
+            uint8_t final_data[MAX_PACKET_PAYLOAD];
+            int final_len = decrypted_len;
+            
+            if (pkt->getPayloadVer() == PAYLOAD_VER_2) {
+              final_len = Utils::decompressPayloadWithHeader(
+                final_data, decrypted_data, decrypted_len, 5, PAYLOAD_VER_2, "GRP"
+              );
+              if (final_len < 0) {
+                MESH_DEBUG_PRINTLN("%s GRP decompression failed", getLogDateTime());
+                continue;  // Try next channel
+              }
+            } else {
+              // Not compressed: use as-is
+              memcpy(final_data, decrypted_data, decrypted_len);
+            }
+            
+            onGroupDataRecv(pkt, pkt->getPayloadType(), channels[j], final_data, final_len);
             break;
           }
         }
@@ -477,12 +517,27 @@ Packet* Mesh::createDatagram(uint8_t type, const Identity& dest, const uint8_t* 
     MESH_DEBUG_PRINTLN("%s Mesh::createDatagram(): error, packet pool empty", getLogDateTime());
     return NULL;
   }
-  packet->header = (type << PH_TYPE_SHIFT);  // ROUTE_TYPE_* set later
+
+  const uint8_t* data_to_encrypt = data;
+  size_t data_to_encrypt_len = data_len;
+  uint8_t compressed_buffer[MAX_PACKET_PAYLOAD];
+  uint8_t payload_ver = PAYLOAD_VER_1;  // default
+
+  // Apply compression for PAYLOAD_TYPE_TXT_MSG
+  // Text messages have a 5-byte header (4-byte timestamp + 1-byte type/attempt) followed by text.
+  if (type == PAYLOAD_TYPE_TXT_MSG) {
+    data_to_encrypt_len = Utils::compressPayloadWithHeader(
+      compressed_buffer, data, data_len, 5, &payload_ver, "TXT_MSG"
+    );
+    data_to_encrypt = compressed_buffer;
+  }
+
+  packet->header = (type << PH_TYPE_SHIFT) | (payload_ver << PH_VER_SHIFT);  // ROUTE_TYPE_* set later
 
   int len = 0;
   len += dest.copyHashTo(&packet->payload[len]);  // dest hash
   len += self_id.copyHashTo(&packet->payload[len]);  // src hash
-  len += Utils::encryptThenMAC(secret, &packet->payload[len], data, data_len);
+  len += Utils::encryptThenMAC(secret, &packet->payload[len], data_to_encrypt, data_to_encrypt_len);
 
   packet->payload_len = len;
 
@@ -526,11 +581,26 @@ Packet* Mesh::createGroupDatagram(uint8_t type, const GroupChannel& channel, con
     MESH_DEBUG_PRINTLN("%s Mesh::createGroupDatagram(): error, packet pool empty", getLogDateTime());
     return NULL;
   }
-  packet->header = (type << PH_TYPE_SHIFT);  // ROUTE_TYPE_* set later
+
+  const uint8_t* data_to_encrypt = data;
+  size_t data_to_encrypt_len = data_len;
+  uint8_t compressed_buffer[MAX_PACKET_PAYLOAD];
+  uint8_t payload_ver = PAYLOAD_VER_1;  // default
+
+  // Apply compression for PAYLOAD_TYPE_GRP_TXT only
+  // Group text messages have a 5-byte header (4-byte timestamp + 1-byte type) followed by text.
+  if (type == PAYLOAD_TYPE_GRP_TXT) {
+    data_to_encrypt_len = Utils::compressPayloadWithHeader(
+      compressed_buffer, data, data_len, 5, &payload_ver, "GRP_TXT"
+    );
+    data_to_encrypt = compressed_buffer;
+  }
+
+  packet->header = (type << PH_TYPE_SHIFT) | (payload_ver << PH_VER_SHIFT);  // ROUTE_TYPE_* set later
 
   int len = 0;
   memcpy(&packet->payload[len], channel.hash, PATH_HASH_SIZE); len += PATH_HASH_SIZE;
-  len += Utils::encryptThenMAC(channel.secret, &packet->payload[len], data, data_len);
+  len += Utils::encryptThenMAC(channel.secret, &packet->payload[len], data_to_encrypt, data_to_encrypt_len);
 
   packet->payload_len = len;
 
