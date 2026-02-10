@@ -32,8 +32,8 @@ namespace mesh {
 #define PAYLOAD_TYPE_RAW_CUSTOM   0x0F    // custom packet as raw bytes, for applications with custom encryption, payloads, etc
 
 #define PAYLOAD_VER_1       0x00   // 1-byte src/dest hashes, 2-byte MAC
-#define PAYLOAD_VER_2       0x01   // FUTURE (eg. 2-byte hashes, 4-byte MAC ??)
-#define PAYLOAD_VER_3       0x02   // FUTURE
+#define PAYLOAD_VER_2       0x01   // v1 with payload compression
+#define PAYLOAD_VER_3       0x02   // FUTURE (eg. 2-byte hashes, 4-byte MAC ??)
 #define PAYLOAD_VER_4       0x03   // FUTURE
 
 /**

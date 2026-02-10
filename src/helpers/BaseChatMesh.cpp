@@ -352,6 +352,8 @@ void BaseChatMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mes
     // len can be > original length, but 'text' will be padded with zeroes
     data[len] = 0; // need to make a C string again, with null terminator
 
+    MESH_DEBUG_PRINTLN("onGroupDataRecv: len=%d, text_len=%d, text='%s'", len, len - 5, &data[5]);
+
     // notify UI  of this new message
     onChannelMessageRecv(channel, packet, timestamp, (const char *) &data[5]);  // let UI know
   }
@@ -436,8 +438,12 @@ bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel& chan
   if (text_len + prefix_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN - prefix_len;
   memcpy(ep, text, text_len);
   ep[text_len] = 0;  // null terminator
+  
+  int total_len = 5 + prefix_len + text_len;
+  MESH_DEBUG_PRINTLN("sendGroupMessage: text_len=%d, prefix_len=%d, total=%d, text='%.*s'", text_len,
+                     prefix_len, total_len, prefix_len + text_len, &temp[5]);
 
-  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel, temp, 5 + prefix_len + text_len);
+  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel, temp, total_len);
   if (pkt) {
     sendFloodScoped(channel, pkt);
     return true;
