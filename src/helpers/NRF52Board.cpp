@@ -54,14 +54,18 @@ void NRF52Board::initPowerMgr() {
   boot_voltage_mv = 0;  // Will be set by checkBootVoltage()
 
   // Clear registers for next boot
+  // Also clear GPREGRET (register 0) to prevent any stale DFU magic value
+  // (0x57, 0xA8, 0x4e) from triggering bootloader mode on the next reset.
   // Note: At this point SoftDevice may or may not be enabled
   uint8_t sd_enabled = 0;
   sd_softdevice_is_enabled(&sd_enabled);
   if (sd_enabled) {
     sd_power_reset_reason_clr(0xFFFFFFFF);
+    sd_power_gpregret_clr(0, 0xFF);
     sd_power_gpregret_clr(1, 0xFF);
   } else {
     NRF_POWER->RESETREAS = 0xFFFFFFFF;  // Write 1s to clear
+    NRF_POWER->GPREGRET = 0;
     NRF_POWER->GPREGRET2 = 0;
   }
 
@@ -142,13 +146,17 @@ void NRF52Board::initiateShutdown(uint8_t reason) {
 void NRF52Board::enterSystemOff(uint8_t reason) {
   MESH_DEBUG_PRINTLN("PWRMGT: Entering SYSTEMOFF (%s)", getShutdownReasonString(reason));
 
-  // Record shutdown reason in GPREGRET2
+  // Clear GPREGRET (register 0) so the bootloader does not enter DFU mode on
+  // SYSTEMOFF wake or power restore (it retains its value through SYSTEMOFF).
+  // Record shutdown reason in GPREGRET2 (register 1) for our own use.
   uint8_t sd_enabled = 0;
   sd_softdevice_is_enabled(&sd_enabled);
   if (sd_enabled) {
+    sd_power_gpregret_clr(0, 0xFF);
     sd_power_gpregret_clr(1, 0xFF);
     sd_power_gpregret_set(1, reason);
   } else {
+    NRF_POWER->GPREGRET = 0;
     NRF_POWER->GPREGRET2 = reason;
   }
 
